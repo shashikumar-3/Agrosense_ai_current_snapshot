@@ -15,7 +15,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             <SidebarTrigger />
             <div className="flex items-center gap-2 flex-1">
               <Leaf className="w-5 h-5 text-primary" />
-              <span className="font-display font-semibold text-sm">CropGuard AI</span>
+              <span className="font-display font-semibold text-sm">AgroSense AI</span>
             </div>
             {user && (
               <span className="text-xs text-muted-foreground hidden sm:block">

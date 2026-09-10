@@ -63,7 +63,7 @@ export default function LoginPage() {
               <Leaf className="w-7 h-7 text-primary-foreground" />
             </motion.div>
             <h1 className="text-2xl font-display font-bold">Welcome Back</h1>
-            <p className="text-sm text-muted-foreground mt-1">Sign in to CropGuard AI</p>
+            <p className="text-sm text-muted-foreground mt-1">Sign in to AgroSense AI</p>
           </motion.div>
 
           <form onSubmit={handleSubmit} className="space-y-5">

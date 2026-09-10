@@ -1,9 +1,19 @@
-"""Two-image + environmental observation-based risk prognosis (Gemini with local fallback)."""
+"""Two-image + environmental observation-based risk prognosis.
+
+Provider order: Groq (primary) -> Gemini (secondary, if configured) -> local heuristic. Any
+provider exception falls through to the next rather than failing the request — this endpoint
+should always return a usable result.
+"""
 from __future__ import annotations
+
+import logging
 
 from config.settings import Config
 from services.gemini_service import gemini_two_image_prognosis
+from services.groq_service import groq_two_image_prognosis
 from utils.errors import PredictionPipelineError
+
+logger = logging.getLogger(__name__)
 
 
 def _heuristic_prognosis(*, humidity: float, temperature: float, ndvi: float) -> dict:
@@ -100,16 +110,24 @@ def run_prognosis(
     ndvi: float,
     plant_id: str,
 ) -> dict:
-    if not Config.gemini_ready() or not current_bytes or not previous_bytes:
+    core: dict | None = None
+    if current_bytes and previous_bytes:
+        if Config.groq_ready():
+            try:
+                core = groq_two_image_prognosis(
+                    current_bytes, previous_bytes, humidity_pct=humidity, temperature_c=temperature, ndvi=ndvi
+                )
+            except Exception as exc:
+                logger.warning("Groq prognosis failed, falling back: %s", exc)
+        if core is None and Config.gemini_ready():
+            try:
+                core = gemini_two_image_prognosis(
+                    current_bytes, previous_bytes, humidity_pct=humidity, temperature_c=temperature, ndvi=ndvi
+                )
+            except Exception as exc:
+                logger.warning("Gemini prognosis failed, falling back to heuristic: %s", exc)
+    if core is None:
         core = _heuristic_prognosis(humidity=humidity, temperature=temperature, ndvi=ndvi)
-    else:
-        core = gemini_two_image_prognosis(
-            current_bytes,
-            previous_bytes,
-            humidity_pct=humidity,
-            temperature_c=temperature,
-            ndvi=ndvi,
-        )
     return {
         **core,
         "inputs": {

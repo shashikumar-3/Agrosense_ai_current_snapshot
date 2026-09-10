@@ -62,7 +62,7 @@ export default function SignupPage() {
               <Leaf className="w-7 h-7 text-primary-foreground" />
             </motion.div>
             <h1 className="text-2xl font-display font-bold">Create Account</h1>
-            <p className="text-sm text-muted-foreground mt-1">Join CropGuard AI today</p>
+            <p className="text-sm text-muted-foreground mt-1">Join AgroSense AI today</p>
           </motion.div>
 
           <form onSubmit={handleSubmit} className="space-y-5">

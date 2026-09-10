@@ -16,10 +16,10 @@ AgroSense ties together:
 
 | Area | What it does |
 |------|----------------|
-| **Detect** | Upload **current** and **older** (1–3 days) photos + env inputs; **Gemini** compares images and text-grounded prognosis for outbreak likelihood, precautions, and watch signs. Optional **Gemini chat** after a run. |
+| **Detect** | Upload **current** and **older** (1–3 days) photos + env inputs; **Groq** (primary) or **Gemini** (secondary, optional) compares images and returns text-grounded prognosis for outbreak likelihood, precautions, and watch signs — with a local heuristic as a last-resort fallback so the endpoint always returns something usable. Optional AI chat after a run. |
 | **Insights** | **Open‑Meteo** by latitude/longitude: live **temperature & humidity**, 7‑day series, heuristic **AI summary** and **feature-importance-style** bars (estimated from trends, not a separate ML explainer). |
-| **History / predict** | **SQLite** history UI; **MySQL** + **Hugging Face** image classifier for classic single-image **predict** pipeline where configured. |
-| **Auth** | Optional **MySQL**-backed signup/login when database is configured. |
+| **History / predict** | **SQLite** history UI; **MySQL** + **Hugging Face** image classifier (with Groq/Gemini vision fallback) for the single-image **predict** pipeline where configured. |
+| **Auth** | Signup/login **works without any setup** — SQLite by default, upgrading to MySQL automatically when it's configured and reachable. |
 
 ---
 
@@ -29,7 +29,7 @@ AgroSense ties together:
 |--------|----------------|
 | **Frontend** | React 18, TypeScript, Vite 5, Tailwind CSS, shadcn/ui, React Router, TanStack Query, Recharts, Framer Motion, Lucide icons |
 | **Backend** | Python 3.10+, Flask, Flask-CORS, PyMySQL, requests, Pillow |
-| **AI / ML** | Google **Gemini** (vision + chat + prognosis JSON), **Hugging Face Inference** (crop disease classification), optional **Cloudinary** for image URLs |
+| **AI / ML** | **Groq** (primary — vision + chat + prognosis JSON, OpenAI-compatible API), optional **Google Gemini** as a secondary provider, **Hugging Face Inference** (crop disease classification), optional **Cloudinary** for image URLs |
 | **Data & weather** | **Open‑Meteo** (forecast + current conditions), **Nominatim** (reverse geocode for place labels) |
 | **Storage** | **SQLite** (`agrosense.db`) for local snapshots/history flows; **MySQL** for auth + predictions table when enabled |
 
@@ -47,12 +47,13 @@ flowchart TB
 
   subgraph api["Flask API :5000"]
     Routes["Routes: /predict /prognosis /data /weather/current /history /chat/gemini /auth/* …"]
-    Services["Services: prediction, prognosis, Gemini, HF, weather helpers"]
+    Services["Services: prediction, prognosis, Groq, Gemini, HF, weather helpers"]
   end
 
   subgraph external["External services"]
     HF["Hugging Face Inference"]
-    GEM["Google Gemini"]
+    GRQ["Groq (primary)"]
+  GEM["Google Gemini (optional)"]
     OM["Open-Meteo"]
     NOM["Nominatim OSM"]
     CLD["Cloudinary (optional)"]
@@ -66,6 +67,7 @@ flowchart TB
   UI -->|HTTP JSON / multipart| Routes
   Routes --> Services
   Services --> HF
+  Services --> GRQ
   Services --> GEM
   Services --> OM
   Services --> NOM
@@ -74,7 +76,7 @@ flowchart TB
   Services --> MY
 ```
 
-**Detect / prognosis path (simplified):** two images + humidity, temperature, NDVI → backend builds multimodal prompt → **Gemini** returns structured outlook (risk, summary, precautions) → dashboard + optional chat using the same image context.
+**Detect / prognosis path (simplified):** two images + humidity, temperature, NDVI → backend builds a multimodal prompt → **Groq** (or Gemini as a fallback) returns structured outlook (risk, summary, precautions) → dashboard + optional chat using the same image context.
 
 **Insights path:** geolocation or manual lat/lon → **Open‑Meteo** hourly + current → daily aggregates for charts; **live** temperature/humidity from `current` fields; client-side explainability heuristics for copy and bars.
 
@@ -86,10 +88,13 @@ flowchart TB
 - **Python** 3.10+
 - **Git**
 - **API keys** (as needed):
-  - `GEMINI_API_KEY` — prognosis, chat, HF fallback
-  - `HF_API_KEY` — single-image disease classification (`/predict`)
+  - `GROQ_API_KEY` — **primary** AI provider: classification fallback, insights, prognosis, chat (in `backend/.env`, server-side only — never the frontend `.env`)
+  - `GEMINI_API_KEY` — optional secondary AI provider, used only if Groq is unavailable
+  - `HF_API_KEY` — primary single-image disease classification (`/predict`)
   - `CLOUDINARY_*` — optional browser uploads
-  - **MySQL** — only if you use auth + MySQL-backed predictions (`mysql_setup.sql` / `.env.example`)
+  - **MySQL** — only for `/predict` (image classification history) — **auth (login/signup) does NOT need MySQL**, it falls back to a local SQLite file automatically
+
+**Windows quickest start:** once `backend/.venv` and `npm install` have been run once (see below), just double-click **`start.bat`** — it auto-detects free ports, launches both servers each in their own window, and opens the app in your browser. `free_ports.bat` reclaims ports left over from a crashed run.
 
 ---
 
@@ -123,7 +128,7 @@ copy .env.example .env   # Windows
 # cp .env.example .env    # macOS / Linux
 ```
 
-Edit **`backend/.env`**: set at least `GEMINI_API_KEY` for prognosis/chat; set `HF_API_KEY` and MySQL vars if you use those features. See comments in **`backend/.env.example`**.
+Edit **`backend/.env`**: set at least `GROQ_API_KEY` (primary AI provider) for prognosis/chat/insights; set `HF_API_KEY` and MySQL vars if you use disease classification (`/predict`). See comments in **`backend/.env.example`**.
 
 Run the API:
 
@@ -169,9 +174,11 @@ npm run preview
 
 Serve `dist/` behind any static host; set **`VITE_API_BASE`** at build time to your public API URL.
 
-### 5. MySQL (optional)
+### 5. MySQL (optional — NOT required for login/signup)
 
-If you use login/signup and MySQL-backed predictions:
+Auth (`/auth/signup`, `/auth/login`) works out of the box with no setup: it falls back to a local
+SQLite file (`backend/agrosense.db`) whenever MySQL isn't reachable. MySQL is only needed for the
+single-image disease classification pipeline (`/predict` + its history):
 
 1. Create database and tables per **`backend/mysql_setup.sql`**.
 2. Set **`MYSQL_*`** in **`backend/.env`**.
@@ -181,7 +188,8 @@ If you use login/signup and MySQL-backed predictions:
 
 ## Health checks
 
-- **Gemini:** `GET http://127.0.0.1:5000/health/gemini`
+- **Groq (primary):** `GET http://127.0.0.1:5000/health/groq`
+- **Gemini (secondary):** `GET http://127.0.0.1:5000/health/gemini`
 - **Hugging Face:** `GET http://127.0.0.1:5000/health/hf`
 
 ---

@@ -16,18 +16,18 @@ interface AuthContextType {
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
-const AUTH_TOKEN_KEY = "cropguard_auth_token";
-const AUTH_USER_KEY = "cropguard_user";
+const AUTH_TOKEN_KEY = "agrosense_auth_token";
+const AUTH_USER_KEY = "agrosense_user";
 
 async function readApiResponse(res: Response): Promise<Record<string, unknown>> {
   if (!(res.headers.get("content-type") || "").includes("application/json")) {
-    throw new Error("The authentication service returned an unexpected response. Ensure the CropGuard Flask API is running on the configured API port.");
+    throw new Error("The authentication service returned an unexpected response. Ensure the AgroSense Flask API is running on the configured API port.");
   }
   return res.json() as Promise<Record<string, unknown>>;
 }
 
 function networkErrorMessage(): string {
-  return "Cannot reach the authentication service. Start the CropGuard Flask API and check VITE_API_BASE.";
+  return "Cannot reach the authentication service. Start the AgroSense Flask API and check VITE_API_BASE.";
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {

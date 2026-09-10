@@ -13,24 +13,11 @@ logger = logging.getLogger(__name__)
 _BASE = Path(__file__).resolve().parent.parent
 load_dotenv(_BASE / ".env", override=True)
 
-# Values often mistaken for Cloudinary cloud_name (e.g. MYSQL_USER=root).
-# Legacy Gemini 1.x names are not used as defaults; they are coerced to the default 2.5 Flash id.
-_GEMINI_DEPRECATED_MODEL_ALIASES = frozenset(
-    {
-        "gemini-1.5-flash",
-        "gemini-1.5-flash-latest",
-        "gemini-1.5-pro",
-        "gemini-1.5-pro-latest",
-        "gemini-pro",
-        "gemini-pro-vision",
-        "gemini-1.0-pro",
-        "gemini-1.0-pro-vision",
-        "gemini-2.0-flash",
-    }
-)
 # Single default when GEMINI_MODEL is unset in backend/.env (Google AI Gemini API model id).
-# gemini-2.5-flash was retired for new users; use a supported 3.x model instead.
-_DEFAULT_GEMINI_MODEL = "gemini-3.6-flash"
+# NOTE: Groq (see groq_api_key/groq_ready below) is the primary AI provider for this app — it's
+# tried first everywhere. Gemini is an optional secondary provider; set a real id from
+# GET /health/gemini -> models_preview for your API key if you want to use it.
+_DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 
 _DISALLOWED_CLOUDINARY_NAMES = frozenset(
     {
@@ -150,6 +137,55 @@ class Config(metaclass=ConfigMeta):
     def gemini_api_key(cls) -> str:
         return cls._env("GEMINI_API_KEY") or cls._env("GOOGLE_API_KEY")
 
+    # --- Groq (primary LLM provider: fast inference, vision + text, JSON mode) ---
+    # https://console.groq.com/keys — Groq periodically retires models, so GROQ_TEXT_MODEL /
+    # GROQ_VISION_MODEL are read from env with a live-verified default; override in backend/.env
+    # if GET /health/groq reports the default was decommissioned.
+    @classmethod
+    def groq_api_key(cls) -> str:
+        return cls._env("GROQ_API_KEY")
+
+    @classmethod
+    def groq_ready(cls) -> bool:
+        return bool(cls.groq_api_key())
+
+    @classmethod
+    def groq_text_model(cls) -> str:
+        return cls._env("GROQ_TEXT_MODEL", "openai/gpt-oss-120b")
+
+    @classmethod
+    def groq_vision_model(cls) -> str:
+        return cls._env("GROQ_VISION_MODEL", "qwen/qwen3.8-27b")
+
+    @classmethod
+    def _groq_fallback_tokens(cls, env_key: str) -> list[str]:
+        raw = cls._env(env_key, "").strip()
+        if not raw:
+            return []
+        return [p.strip() for p in raw.split(",") if p.strip()]
+
+    @classmethod
+    def groq_text_model_candidates(cls) -> list[str]:
+        primary = cls.groq_text_model()
+        fallbacks = cls._groq_fallback_tokens("GROQ_TEXT_MODEL_FALLBACKS") or ["openai/gpt-oss-20b", "groq/compound"]
+        ordered, seen = [], set()
+        for name in [primary, *fallbacks]:
+            if name and name not in seen:
+                seen.add(name)
+                ordered.append(name)
+        return ordered
+
+    @classmethod
+    def groq_vision_model_candidates(cls) -> list[str]:
+        primary = cls.groq_vision_model()
+        fallbacks = cls._groq_fallback_tokens("GROQ_VISION_MODEL_FALLBACKS") or ["qwen/qwen3.6-27b"]
+        ordered, seen = [], set()
+        for name in [primary, *fallbacks]:
+            if name and name not in seen:
+                seen.add(name)
+                ordered.append(name)
+        return ordered
+
     @classmethod
     def backend_dotenv_path(cls) -> Path:
         """Path to backend/.env loaded at import (see module-level load_dotenv)."""
@@ -170,21 +206,13 @@ class Config(metaclass=ConfigMeta):
 
     @classmethod
     def _coerce_gemini_model_token(cls, raw: str) -> str:
-        """Strip models/ prefix; map legacy 1.x / bundled 2.0 id to default 2.5 Flash."""
+        """Strip a models/ prefix; otherwise use exactly what's configured (no silent rewriting —
+        a forced alias here previously masked genuinely invalid ids instead of surfacing them)."""
         s = (raw or "").strip()
         if not s:
             return ""
         if s.lower().startswith("models/"):
             s = s[7:]
-        key = s.lower()
-        if key in _GEMINI_DEPRECATED_MODEL_ALIASES:
-            logger.warning(
-                "GEMINI model id %r is legacy/unsupported in this app — coercing to %r. "
-                "Set GEMINI_MODEL explicitly in backend/.env to your target Gemini 2.5 id.",
-                raw,
-                _DEFAULT_GEMINI_MODEL,
-            )
-            return _DEFAULT_GEMINI_MODEL
         return s
 
     @classmethod

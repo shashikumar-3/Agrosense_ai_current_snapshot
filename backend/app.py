@@ -698,18 +698,30 @@ def health_gemini():
     return jsonify(payload), 200
 
 
+@app.route("/health/groq", methods=["GET"])
+def health_groq():
+    """List active Groq models and run a tiny generate — verifies API key and model IDs. Groq is
+    the primary AI provider for this app; check this first when insights/chat/prognosis misbehave."""
+    from services.groq_service import groq_health_probe
+
+    payload = groq_health_probe()
+    return jsonify(payload), 200
+
+
 @app.route("/chat/gemini", methods=["POST"])
 def chat_gemini():
-    """Multimodal crop assistant: multipart ``image`` + form field ``message``."""
+    """Multimodal crop assistant: multipart ``image`` + form field ``message``.
+    Route path kept for frontend compatibility; tries Groq first, then Gemini."""
     from config.settings import Config
     from services.gemini_service import gemini_crop_chat
+    from services.groq_service import groq_crop_chat
 
-    if not Config.gemini_ready():
+    if not Config.groq_ready() and not Config.gemini_ready():
         return (
             jsonify(
                 {
-                    "error": "Gemini is not configured. Set GEMINI_API_KEY in backend/.env.",
-                    "error_code": "GEMINI_AUTH",
+                    "error": "No AI provider is configured. Set GROQ_API_KEY (or GEMINI_API_KEY) in backend/.env.",
+                    "error_code": "AI_NOT_CONFIGURED",
                 }
             ),
             503,
@@ -724,18 +736,30 @@ def chat_gemini():
     raw = image.read()
     if not raw:
         return jsonify({"error": "Empty image file."}), 400
-    try:
-        reply = gemini_crop_chat(message, raw)
-        return jsonify({"reply": reply}), 200
-    except PredictionPipelineError as exc:
-        payload: dict = {"error": exc.message}
-        if exc.error_code:
-            payload["error_code"] = exc.error_code
-        if exc.details:
-            payload["details"] = exc.details[:2000]
-        return jsonify(payload), exc.status_code
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+
+    last_exc: Exception | None = None
+    if Config.groq_ready():
+        try:
+            reply = groq_crop_chat(message, raw)
+            return jsonify({"reply": reply, "provider": "groq"}), 200
+        except Exception as exc:
+            app.logger.warning("Groq chat failed, falling back to Gemini: %s", exc)
+            last_exc = exc
+    if Config.gemini_ready():
+        try:
+            reply = gemini_crop_chat(message, raw)
+            return jsonify({"reply": reply, "provider": "gemini"}), 200
+        except Exception as exc:
+            last_exc = exc
+
+    if isinstance(last_exc, PredictionPipelineError):
+        payload: dict = {"error": last_exc.message}
+        if last_exc.error_code:
+            payload["error_code"] = last_exc.error_code
+        if last_exc.details:
+            payload["details"] = last_exc.details[:2000]
+        return jsonify(payload), last_exc.status_code
+    return jsonify({"error": str(last_exc) if last_exc else "Chat failed."}), 500
 
 
 @app.route("/prognosis", methods=["POST"])
