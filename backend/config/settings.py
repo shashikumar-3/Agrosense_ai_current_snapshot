@@ -29,7 +29,8 @@ _GEMINI_DEPRECATED_MODEL_ALIASES = frozenset(
     }
 )
 # Single default when GEMINI_MODEL is unset in backend/.env (Google AI Gemini API model id).
-_DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+# gemini-2.5-flash was retired for new users; use a supported 3.x model instead.
+_DEFAULT_GEMINI_MODEL = "gemini-3.6-flash"
 
 _DISALLOWED_CLOUDINARY_NAMES = frozenset(
     {

@@ -19,6 +19,17 @@ const AuthContext = createContext<AuthContextType | null>(null);
 const AUTH_TOKEN_KEY = "cropguard_auth_token";
 const AUTH_USER_KEY = "cropguard_user";
 
+async function readApiResponse(res: Response): Promise<Record<string, unknown>> {
+  if (!(res.headers.get("content-type") || "").includes("application/json")) {
+    throw new Error("The authentication service returned an unexpected response. Ensure the CropGuard Flask API is running on the configured API port.");
+  }
+  return res.json() as Promise<Record<string, unknown>>;
+}
+
+function networkErrorMessage(): string {
+  return "Cannot reach the authentication service. Start the CropGuard Flask API and check VITE_API_BASE.";
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -56,13 +67,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
       });
-      const data = await res.json();
+      const data = await readApiResponse(res);
       if (!res.ok) {
-        throw new Error(data.error || "Login failed");
+        throw new Error(typeof data.error === "string" ? data.error : "Login failed");
       }
-      setUser(data.user);
+      if (typeof data.token !== "string" || !data.user || typeof data.user !== "object") throw new Error("The authentication service returned incomplete account data.");
+      setUser(data.user as AuthUser);
       localStorage.setItem(AUTH_TOKEN_KEY, data.token);
       localStorage.setItem(AUTH_USER_KEY, JSON.stringify(data.user));
+    } catch (error) {
+      if (error instanceof TypeError) throw new Error(networkErrorMessage());
+      throw error;
     } finally {
       setIsLoading(false);
     }
@@ -76,13 +91,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password, name }),
       });
-      const data = await res.json();
+      const data = await readApiResponse(res);
       if (!res.ok) {
-        throw new Error(data.error || "Signup failed");
+        throw new Error(typeof data.error === "string" ? data.error : "Signup failed");
       }
-      setUser(data.user);
+      if (typeof data.token !== "string" || !data.user || typeof data.user !== "object") throw new Error("The authentication service returned incomplete account data.");
+      setUser(data.user as AuthUser);
       localStorage.setItem(AUTH_TOKEN_KEY, data.token);
       localStorage.setItem(AUTH_USER_KEY, JSON.stringify(data.user));
+    } catch (error) {
+      if (error instanceof TypeError) throw new Error(networkErrorMessage());
+      throw error;
     } finally {
       setIsLoading(false);
     }

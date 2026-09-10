@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { getApiBase } from "@/lib/api-base";
 
 /** Matches backend HF_UNAVAILABLE — stable UX when Hugging Face / network fails. */
@@ -177,7 +177,7 @@ export function useHistory() {
   const [isClearing, setIsClearing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchHistory = async () => {
+  const fetchHistory = useCallback(async () => {
     setIsLoading(true);
     setError(null);
     try {
@@ -185,27 +185,27 @@ export function useHistory() {
       if (!res.ok) throw new Error("Failed to fetch history");
       const data = await res.json();
       setHistory(data);
-    } catch (err: any) {
-      setError(err.message || "Something went wrong");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
 
-  const clearHistory = async () => {
+  const clearHistory = useCallback(async () => {
     setIsClearing(true);
     setError(null);
     try {
       const res = await fetch(`${getApiBase()}/history`, { method: "DELETE" });
       if (!res.ok) throw new Error("Failed to clear history");
       setHistory([]);
-    } catch (err: any) {
-      setError(err.message || "Something went wrong");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Something went wrong");
       throw err;
     } finally {
       setIsClearing(false);
     }
-  };
+  }, []);
 
   return { history, fetchHistory, clearHistory, isLoading, isClearing, error };
 }
@@ -273,7 +273,7 @@ export function useAgriData() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchAgriData = async (latitude: number, longitude: number) => {
+  const fetchAgriData = useCallback(async (latitude: number, longitude: number) => {
     setIsLoading(true);
     setError(null);
     try {
@@ -290,13 +290,13 @@ export function useAgriData() {
       }
       setData(payload);
       return payload as AgriDataResponse;
-    } catch (err: any) {
-      setError(err.message || "Something went wrong");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Something went wrong");
       throw err;
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
 
   return { data, fetchAgriData, isLoading, error };
 }

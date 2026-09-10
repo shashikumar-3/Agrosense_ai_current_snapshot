@@ -133,6 +133,9 @@ python app.py
 
 Default: **http://127.0.0.1:5000** (binds `0.0.0.0` for LAN testing).
 
+If port 5000 is already occupied, add `PORT=5001` to `backend/.env`, add
+`VITE_API_BASE=http://127.0.0.1:5001` to the frontend `.env`, then restart both servers.
+
 First run creates **`backend/agrosense.db`** locally (gitignored).
 
 ### 3. Frontend

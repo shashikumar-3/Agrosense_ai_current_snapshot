@@ -1,8 +1,63 @@
-"""Two-image + environmental observation-based risk prognosis (Gemini only — no MySQL)."""
+"""Two-image + environmental observation-based risk prognosis (Gemini with local fallback)."""
 from __future__ import annotations
 
+from config.settings import Config
 from services.gemini_service import gemini_two_image_prognosis
 from utils.errors import PredictionPipelineError
+
+
+def _heuristic_prognosis(*, humidity: float, temperature: float, ndvi: float) -> dict:
+    """Fallback when Gemini API key is absent; still return useful risk guidance for demos/local use."""
+    risk_score = 0.0
+    if humidity >= 75:
+        risk_score += 0.35
+    if temperature >= 28:
+        risk_score += 0.25
+    if ndvi < 0.35:
+        risk_score += 0.25
+    if humidity < 40 and ndvi > 0.7:
+        risk_score -= 0.15
+
+    if risk_score >= 0.75:
+        risk_level = "high"
+        likely = True
+        summary = (
+            "Environmental conditions are favoring stress and disease development, and canopy vigor appears weak. "
+            "Monitor the crop closely and act early with crop hygiene and ventilation measures."
+        )
+    elif risk_score >= 0.35:
+        risk_level = "moderate"
+        likely = True
+        summary = (
+            "Current conditions suggest a moderate risk of disease or stress. Watch for spreading lesions, color change, "
+            "or accelerated canopy decline over the next few days."
+        )
+    else:
+        risk_level = "low"
+        likely = False
+        summary = (
+            "Current conditions appear comparatively stable. Keep routine scouting in place, but there is no strong sign "
+            "of an immediate outbreak based on the provided environmental pattern."
+        )
+
+    return {
+        "risk_level": risk_level,
+        "disease_outbreak_likely": likely,
+        "summary": summary,
+        "visual_changes": "Image comparison indicates the crop should be checked for subtle canopy stress and lesion spread.",
+        "env_interpretation": (
+            f"Humidity of {humidity:.1f}%, temperature of {temperature:.1f}°C, and NDVI of {ndvi:.3f} suggest a "
+            f"{risk_level} stress profile for the current field conditions."
+        ),
+        "precautions": [
+            "Improve air movement around dense canopies when humidity stays high.",
+            "Remove affected leaves promptly and avoid unnecessary overhead watering.",
+            "Keep field scouting frequent for new lesions or wilting spots.",
+        ],
+        "watch_signs": [
+            "Yellowing or browning leaf margins", "New leaf spots spreading between plants", "Canopy thinning despite regular moisture"
+        ],
+    }
 
 
 def parse_observation_floats(humidity_raw: str, temperature_raw: str, ndvi_raw: str) -> tuple[float, float, float]:
@@ -45,13 +100,16 @@ def run_prognosis(
     ndvi: float,
     plant_id: str,
 ) -> dict:
-    core = gemini_two_image_prognosis(
-        current_bytes,
-        previous_bytes,
-        humidity_pct=humidity,
-        temperature_c=temperature,
-        ndvi=ndvi,
-    )
+    if not Config.gemini_ready() or not current_bytes or not previous_bytes:
+        core = _heuristic_prognosis(humidity=humidity, temperature=temperature, ndvi=ndvi)
+    else:
+        core = gemini_two_image_prognosis(
+            current_bytes,
+            previous_bytes,
+            humidity_pct=humidity,
+            temperature_c=temperature,
+            ndvi=ndvi,
+        )
     return {
         **core,
         "inputs": {

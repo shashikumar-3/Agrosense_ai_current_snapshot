@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { LayoutTextFlip } from "@/components/ui/layout-text-flip";
 import { RotatingMicrocopy } from "@/components/ui/rotating-microcopy";
+import { useAuth } from "@/hooks/use-auth";
 import heroBg from "@/assets/hero-bg.jpg";
 
 const features = [
@@ -36,6 +37,11 @@ const itemVariants = {
 
 export default function LandingPage() {
   const navigate = useNavigate();
+  const { user, isLoading } = useAuth();
+
+  const handleStartDetection = () => {
+    navigate(user ? "/detect" : "/login");
+  };
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -117,9 +123,10 @@ export default function LandingPage() {
             <Button
               size="lg"
               className="gradient-hero text-primary-foreground font-semibold text-lg px-8 py-6 rounded-xl shadow-lg hover:opacity-90 transition-opacity animate-pulse-glow"
-              onClick={() => navigate("/detect")}
+              onClick={handleStartDetection}
+              disabled={isLoading}
             >
-              Start Detection
+              {isLoading ? "Checking session..." : user ? "Start Detection" : "Login to Start Detection"}
               <ArrowRight className="ml-2 w-5 h-5" />
             </Button>
           </motion.div>

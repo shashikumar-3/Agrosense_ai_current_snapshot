@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
+import { AuthFieldErrors, validateSignup } from "@/lib/auth-validation";
 
 const spring = { type: "spring" as const, stiffness: 300, damping: 24 };
 
@@ -14,18 +15,21 @@ export default function SignupPage() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [errors, setErrors] = useState<AuthFieldErrors>({});
   const { signup, isLoading } = useAuth();
   const navigate = useNavigate();
   const { toast } = useToast();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name || !email || !password) return;
+    const validationErrors = validateSignup(name, email, password);
+    setErrors(validationErrors);
+    if (Object.keys(validationErrors).length) return;
     try {
-      await signup(email, password, name);
+      await signup(email.trim(), password, name.trim());
       navigate("/");
-    } catch {
-      toast({ title: "Signup failed", description: "Please try again.", variant: "destructive" });
+    } catch (error) {
+      toast({ title: "Signup failed", description: error instanceof Error ? error.message : "Please try again.", variant: "destructive" });
     }
   };
 
@@ -74,11 +78,14 @@ export default function SignupPage() {
                   id="name"
                   placeholder="John Doe"
                   value={name}
-                  onChange={(e) => setName(e.target.value)}
+                  onChange={(e) => { setName(e.target.value); setErrors((current) => ({ ...current, name: undefined })); }}
                   className="pl-10 rounded-xl h-11"
+                  aria-invalid={Boolean(errors.name)}
+                  aria-describedby={errors.name ? "name-error" : undefined}
                   required
                 />
               </div>
+              {errors.name && <p id="name-error" className="mt-1.5 text-sm text-destructive">{errors.name}</p>}
             </motion.div>
 
             <motion.div
@@ -94,11 +101,14 @@ export default function SignupPage() {
                   type="email"
                   placeholder="you@example.com"
                   value={email}
-                  onChange={(e) => setEmail(e.target.value)}
+                  onChange={(e) => { setEmail(e.target.value); setErrors((current) => ({ ...current, email: undefined })); }}
                   className="pl-10 rounded-xl h-11"
+                  aria-invalid={Boolean(errors.email)}
+                  aria-describedby={errors.email ? "email-error" : undefined}
                   required
                 />
               </div>
+              {errors.email && <p id="email-error" className="mt-1.5 text-sm text-destructive">{errors.email}</p>}
             </motion.div>
 
             <motion.div
@@ -114,11 +124,15 @@ export default function SignupPage() {
                   type="password"
                   placeholder="••••••••"
                   value={password}
-                  onChange={(e) => setPassword(e.target.value)}
+                  onChange={(e) => { setPassword(e.target.value); setErrors((current) => ({ ...current, password: undefined })); }}
                   className="pl-10 rounded-xl h-11"
+                  minLength={8}
+                  aria-invalid={Boolean(errors.password)}
+                  aria-describedby={errors.password ? "password-error" : undefined}
                   required
                 />
               </div>
+              {errors.password && <p id="password-error" className="mt-1.5 text-sm text-destructive">{errors.password}</p>}
             </motion.div>
 
             <motion.div

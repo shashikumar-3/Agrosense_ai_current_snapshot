@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { Brain, Loader2, MapPin, CloudSun, Droplets, Minus, Sprout, ShieldAlert, TrendingDown, TrendingUp } from "lucide-react";
 import { useAgriData } from "@/hooks/use-api";
@@ -40,7 +40,7 @@ export default function InsightsPage() {
   const [latitude, setLatitude] = useState("");
   const [longitude, setLongitude] = useState("");
 
-  const loadLocationData = async (lat: number, lon: number) => {
+  const loadLocationData = useCallback(async (lat: number, lon: number) => {
     try {
       await fetchAgriData(lat, lon);
       setLatitude(lat.toFixed(6));
@@ -53,9 +53,9 @@ export default function InsightsPage() {
         variant: "destructive",
       });
     }
-  };
+  }, [fetchAgriData, toast]);
 
-  const useCurrentLocation = () => {
+  const requestCurrentLocation = useCallback(() => {
     if (!("geolocation" in navigator)) {
       toast({
         title: "Geolocation not available",
@@ -78,11 +78,11 @@ export default function InsightsPage() {
       },
       { enableHighAccuracy: true, timeout: 10000 },
     );
-  };
+  }, [loadLocationData, toast]);
 
   useEffect(() => {
-    useCurrentLocation();
-  }, []);
+    requestCurrentLocation();
+  }, [requestCurrentLocation]);
 
   const explain = useMemo(() => (data ? buildInsightsExplain(data) : null), [data]);
 
@@ -143,7 +143,7 @@ export default function InsightsPage() {
             <Button type="submit" className="gradient-hero text-primary-foreground rounded-xl" disabled={isLoading}>
               Load Manual Location
             </Button>
-            <Button type="button" variant="outline" onClick={useCurrentLocation} className="rounded-xl" disabled={isLoading}>
+            <Button type="button" variant="outline" onClick={requestCurrentLocation} className="rounded-xl" disabled={isLoading}>
               Use My Location
             </Button>
           </form>

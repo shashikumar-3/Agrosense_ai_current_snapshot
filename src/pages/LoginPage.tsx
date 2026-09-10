@@ -7,24 +7,28 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
+import { AuthFieldErrors, validateLogin } from "@/lib/auth-validation";
 
 const spring = { type: "spring" as const, stiffness: 300, damping: 24 };
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [errors, setErrors] = useState<AuthFieldErrors>({});
   const { login, isLoading } = useAuth();
   const navigate = useNavigate();
   const { toast } = useToast();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email || !password) return;
+    const validationErrors = validateLogin(email, password);
+    setErrors(validationErrors);
+    if (Object.keys(validationErrors).length) return;
     try {
-      await login(email, password);
+      await login(email.trim(), password);
       navigate("/");
-    } catch {
-      toast({ title: "Login failed", description: "Invalid credentials.", variant: "destructive" });
+    } catch (error) {
+      toast({ title: "Login failed", description: error instanceof Error ? error.message : "Unable to sign in.", variant: "destructive" });
     }
   };
 
@@ -76,11 +80,14 @@ export default function LoginPage() {
                   type="email"
                   placeholder="you@example.com"
                   value={email}
-                  onChange={(e) => setEmail(e.target.value)}
+                  onChange={(e) => { setEmail(e.target.value); setErrors((current) => ({ ...current, email: undefined })); }}
                   className="pl-10 rounded-xl h-11"
+                  aria-invalid={Boolean(errors.email)}
+                  aria-describedby={errors.email ? "email-error" : undefined}
                   required
                 />
               </div>
+              {errors.email && <p id="email-error" className="mt-1.5 text-sm text-destructive">{errors.email}</p>}
             </motion.div>
 
             <motion.div
@@ -96,11 +103,14 @@ export default function LoginPage() {
                   type="password"
                   placeholder="••••••••"
                   value={password}
-                  onChange={(e) => setPassword(e.target.value)}
+                  onChange={(e) => { setPassword(e.target.value); setErrors((current) => ({ ...current, password: undefined })); }}
                   className="pl-10 rounded-xl h-11"
+                  aria-invalid={Boolean(errors.password)}
+                  aria-describedby={errors.password ? "password-error" : undefined}
                   required
                 />
               </div>
+              {errors.password && <p id="password-error" className="mt-1.5 text-sm text-destructive">{errors.password}</p>}
             </motion.div>
 
             <motion.div

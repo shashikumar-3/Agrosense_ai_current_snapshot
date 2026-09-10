@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sqlite3
 import secrets
 import sys
@@ -28,9 +29,29 @@ from services.prediction_service import run_crop_prediction
 from utils.errors import PredictionPipelineError
 
 DB_PATH = BASE_DIR / "agrosense.db"
+EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
 app = Flask(__name__)
-CORS(app)
+CORS(
+    app,
+    resources={r"/*": {"origins": "*"}},
+    supports_credentials=False,
+    allow_headers=["Content-Type", "Authorization", "Accept"],
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+
+
+@app.after_request
+def add_cors_headers(response):
+    origin = request.headers.get("Origin")
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+    else:
+        response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, Accept"
+    return response
 
 
 def _log_gemini_startup() -> None:
@@ -57,8 +78,18 @@ MYSQL_READY = False
 MYSQL_INIT_ERROR = ""
 
 
+class DatabaseConnection(sqlite3.Connection):
+    """Close SQLite connections after their transaction context completes."""
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 def get_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, factory=DatabaseConnection)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -90,6 +121,31 @@ def init_db() -> None:
                 ndvi REAL NOT NULL,
                 risk REAL NOT NULL,
                 created_at TEXT NOT NULL
+            )
+            """
+        )
+
+
+def init_sqlite_auth_tables() -> None:
+    with get_db() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                email TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sessions (
+                token TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             )
             """
         )
@@ -165,135 +221,224 @@ def _get_bearer_token() -> str | None:
     return None
 
 
+def validate_auth_input(name: str, email: str, password: str, *, is_signup: bool) -> str | None:
+    """Return a user-safe validation message, or None when the input is acceptable."""
+    if not email or not password or (is_signup and not name):
+        return "name, email, and password are required" if is_signup else "email and password are required"
+    if not EMAIL_PATTERN.fullmatch(email) or len(email) > 191:
+        return "Enter a valid email address"
+    if len(password) > 128:
+        return "Password must be 128 characters or fewer"
+    if is_signup:
+        if not 2 <= len(name) <= 150:
+            return "Name must be between 2 and 150 characters"
+        if len(password) < 8:
+            return "Password must be at least 8 characters"
+        if not re.search(r"[A-Za-z]", password) or not re.search(r"\d", password):
+            return "Password must include at least one letter and one number"
+    return None
+
+
 @app.route("/auth/signup", methods=["POST"])
 def auth_signup() -> tuple:
-    mysql_guard = _require_mysql_ready()
-    if mysql_guard:
-        return mysql_guard
-
     payload = request.get_json(silent=True) or {}
     name = (payload.get("name") or "").strip()
     email = (payload.get("email") or "").strip().lower()
     password = payload.get("password") or ""
 
-    if not name or not email or not password:
-        return jsonify({"error": "name, email, and password are required"}), 400
-
-    if len(password) < 6:
-        return jsonify({"error": "Password must be at least 6 characters"}), 400
+    validation_error = validate_auth_input(name, email, password, is_signup=True)
+    if validation_error:
+        return jsonify({"error": validation_error}), 400
 
     password_hash = generate_password_hash(password)
+
+    if MYSQL_READY:
+        try:
+            with get_mysql_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "INSERT INTO users (name, email, password_hash) VALUES (%s, %s, %s)",
+                        (name, email, password_hash),
+                    )
+                    user_id = cursor.lastrowid
+                    token = secrets.token_hex(32)
+                    cursor.execute("INSERT INTO sessions (token, user_id) VALUES (%s, %s)", (token, user_id))
+                    return (
+                        jsonify(
+                            {
+                                "token": token,
+                                "user": {"id": str(user_id), "name": name, "email": email},
+                            }
+                        ),
+                        201,
+                    )
+        except pymysql.err.IntegrityError:
+            return jsonify({"error": "Email is already registered"}), 409
+        except Exception as exc:
+            return jsonify({"error": f"MySQL signup failed: {exc}"}), 500
+
     try:
-        with get_mysql_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    "INSERT INTO users (name, email, password_hash) VALUES (%s, %s, %s)",
+        init_sqlite_auth_tables()
+        with get_db() as conn:
+            try:
+                cursor = conn.execute(
+                    "INSERT INTO users (name, email, password_hash) VALUES (?, ?, ?)",
                     (name, email, password_hash),
                 )
                 user_id = cursor.lastrowid
-                token = secrets.token_hex(32)
-                cursor.execute("INSERT INTO sessions (token, user_id) VALUES (%s, %s)", (token, user_id))
-                return (
-                    jsonify(
-                        {
-                            "token": token,
-                            "user": {"id": str(user_id), "name": name, "email": email},
-                        }
-                    ),
-                    201,
-                )
-    except pymysql.err.IntegrityError:
-        return jsonify({"error": "Email is already registered"}), 409
+            except sqlite3.IntegrityError:
+                return jsonify({"error": "Email is already registered"}), 409
+            token = secrets.token_hex(32)
+            conn.execute("INSERT INTO sessions (token, user_id) VALUES (?, ?)", (token, user_id))
+            return (
+                jsonify(
+                    {
+                        "token": token,
+                        "user": {"id": str(user_id), "name": name, "email": email},
+                    }
+                ),
+                201,
+            )
     except Exception as exc:
-        return jsonify({"error": f"MySQL signup failed: {exc}"}), 500
+        return jsonify({"error": f"SQLite signup failed: {exc}"}), 500
 
 
 @app.route("/auth/login", methods=["POST"])
 def auth_login() -> tuple:
-    mysql_guard = _require_mysql_ready()
-    if mysql_guard:
-        return mysql_guard
-
     payload = request.get_json(silent=True) or {}
     email = (payload.get("email") or "").strip().lower()
     password = payload.get("password") or ""
-    if not email or not password:
-        return jsonify({"error": "email and password are required"}), 400
+    validation_error = validate_auth_input("", email, password, is_signup=False)
+    if validation_error:
+        return jsonify({"error": validation_error}), 400
+
+    if MYSQL_READY:
+        try:
+            with get_mysql_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT id, name, email, password_hash FROM users WHERE email = %s", (email,))
+                    user = cursor.fetchone()
+                    if not user or not check_password_hash(user["password_hash"], password):
+                        return jsonify({"error": "Invalid credentials"}), 401
+                    token = secrets.token_hex(32)
+                    cursor.execute("INSERT INTO sessions (token, user_id) VALUES (%s, %s)", (token, user["id"]))
+                    return (
+                        jsonify(
+                            {
+                                "token": token,
+                                "user": {
+                                    "id": str(user["id"]),
+                                    "name": user["name"],
+                                    "email": user["email"],
+                                },
+                            }
+                        ),
+                        200,
+                    )
+        except Exception as exc:
+            return jsonify({"error": f"MySQL login failed: {exc}"}), 500
 
     try:
-        with get_mysql_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT id, name, email, password_hash FROM users WHERE email = %s", (email,))
-                user = cursor.fetchone()
-                if not user or not check_password_hash(user["password_hash"], password):
-                    return jsonify({"error": "Invalid credentials"}), 401
-                token = secrets.token_hex(32)
-                cursor.execute("INSERT INTO sessions (token, user_id) VALUES (%s, %s)", (token, user["id"]))
-                return (
-                    jsonify(
-                        {
-                            "token": token,
-                            "user": {
-                                "id": str(user["id"]),
-                                "name": user["name"],
-                                "email": user["email"],
-                            },
-                        }
-                    ),
-                    200,
-                )
+        init_sqlite_auth_tables()
+        with get_db() as conn:
+            user = conn.execute(
+                "SELECT id, name, email, password_hash FROM users WHERE email = ?",
+                (email,),
+            ).fetchone()
+            if not user or not check_password_hash(user["password_hash"], password):
+                return jsonify({"error": "Invalid credentials"}), 401
+            token = secrets.token_hex(32)
+            conn.execute("INSERT INTO sessions (token, user_id) VALUES (?, ?)", (token, user["id"]))
+            return (
+                jsonify(
+                    {
+                        "token": token,
+                        "user": {
+                            "id": str(user["id"]),
+                            "name": user["name"],
+                            "email": user["email"],
+                        },
+                    }
+                ),
+                200,
+            )
     except Exception as exc:
-        return jsonify({"error": f"MySQL login failed: {exc}"}), 500
+        return jsonify({"error": f"SQLite login failed: {exc}"}), 500
 
 
 @app.route("/auth/me", methods=["GET"])
 def auth_me() -> tuple:
-    mysql_guard = _require_mysql_ready()
-    if mysql_guard:
-        return mysql_guard
-
     token = _get_bearer_token()
     if not token:
         return jsonify({"error": "Missing auth token"}), 401
+
+    if MYSQL_READY:
+        try:
+            with get_mysql_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT u.id, u.name, u.email
+                        FROM sessions s
+                        INNER JOIN users u ON u.id = s.user_id
+                        WHERE s.token = %s
+                        """,
+                        (token,),
+                    )
+                    user = cursor.fetchone()
+                    if not user:
+                        return jsonify({"error": "Invalid session"}), 401
+                    return (
+                        jsonify({"user": {"id": str(user["id"]), "name": user["name"], "email": user["email"]}}),
+                        200,
+                    )
+        except Exception as exc:
+            return jsonify({"error": f"MySQL session check failed: {exc}"}), 500
+
     try:
-        with get_mysql_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT u.id, u.name, u.email
-                    FROM sessions s
-                    INNER JOIN users u ON u.id = s.user_id
-                    WHERE s.token = %s
-                    """,
-                    (token,),
-                )
-                user = cursor.fetchone()
-                if not user:
-                    return jsonify({"error": "Invalid session"}), 401
-                return (
-                    jsonify({"user": {"id": str(user["id"]), "name": user["name"], "email": user["email"]}}),
-                    200,
-                )
+        init_sqlite_auth_tables()
+        with get_db() as conn:
+            user = conn.execute(
+                """
+                SELECT u.id, u.name, u.email
+                FROM sessions s
+                INNER JOIN users u ON u.id = s.user_id
+                WHERE s.token = ?
+                """,
+                (token,),
+            ).fetchone()
+            if not user:
+                return jsonify({"error": "Invalid session"}), 401
+            return (
+                jsonify({"user": {"id": str(user["id"]), "name": user["name"], "email": user["email"]}}),
+                200,
+            )
     except Exception as exc:
-        return jsonify({"error": f"MySQL session check failed: {exc}"}), 500
+        return jsonify({"error": f"SQLite session check failed: {exc}"}), 500
 
 
 @app.route("/auth/logout", methods=["POST"])
 def auth_logout() -> tuple:
-    mysql_guard = _require_mysql_ready()
-    if mysql_guard:
-        return mysql_guard
-
     token = _get_bearer_token()
     if not token:
         return jsonify({"ok": True}), 200
+
+    if MYSQL_READY:
+        try:
+            with get_mysql_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("DELETE FROM sessions WHERE token = %s", (token,))
+            return jsonify({"ok": True}), 200
+        except Exception as exc:
+            return jsonify({"error": f"MySQL logout failed: {exc}"}), 500
+
     try:
-        with get_mysql_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("DELETE FROM sessions WHERE token = %s", (token,))
+        init_sqlite_auth_tables()
+        with get_db() as conn:
+            conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
         return jsonify({"ok": True}), 200
     except Exception as exc:
-        return jsonify({"error": f"MySQL logout failed: {exc}"}), 500
+        return jsonify({"error": f"SQLite logout failed: {exc}"}), 500
 
 
 def calculate_risk(temperature: float, humidity: float, soil_moisture: float) -> float:
@@ -603,15 +748,23 @@ def prognosis():
     from services.prognosis_service import parse_observation_floats, run_prognosis
 
     if not Config.gemini_ready():
-        return (
-            jsonify(
-                {
-                    "error": "Gemini is not configured. Set GEMINI_API_KEY in backend/.env.",
-                    "error_code": "GEMINI_AUTH",
-                }
-            ),
-            503,
-        )
+        cur = request.files.get("image_current")
+        prev = request.files.get("image_previous")
+        if not cur or not getattr(cur, "filename", None):
+            return jsonify({"error": 'Multipart file field "image_current" is required.'}), 400
+        if not prev or not getattr(prev, "filename", None):
+            return jsonify({"error": 'Multipart file field "image_previous" is required.'}), 400
+        plant_id = (request.form.get("plant_id") or "default").strip()[:64] or "default"
+        try:
+            h, t, n = parse_observation_floats(
+                request.form.get("humidity", ""),
+                request.form.get("temperature", ""),
+                request.form.get("ndvi", ""),
+            )
+        except PredictionPipelineError as exc:
+            return jsonify({"error": exc.message}), exc.status_code
+        payload = run_prognosis(b"", b"", humidity=h, temperature=t, ndvi=n, plant_id=plant_id)
+        return jsonify(payload), 200
 
     cur = request.files.get("image_current")
     prev = request.files.get("image_previous")
@@ -928,6 +1081,7 @@ def data() -> tuple:
 
 if __name__ == "__main__":
     init_db()
+    init_sqlite_auth_tables()
     try:
         init_mysql()
         MYSQL_READY = True
@@ -938,4 +1092,5 @@ if __name__ == "__main__":
             f"MySQL init failed: {exc}. Set MYSQL_* values in backend/.env with valid credentials."
         )
         print(MYSQL_INIT_ERROR)
-    app.run(host="0.0.0.0", port=5000, debug=True)
+        print("Falling back to SQLite auth storage for signup/login.")
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=True)

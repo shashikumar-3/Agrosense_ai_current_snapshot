@@ -26,7 +26,7 @@ export default function HistoryPage() {
         variant: "destructive",
       });
     });
-  }, []);
+  }, [fetchHistory, toast]);
 
   const handleClearHistory = async () => {
     try {
